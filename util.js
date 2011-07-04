@@ -1,6 +1,9 @@
-var ew_re = /^=\?([\w-]+)\?([QB])\?((?:.|[\r\n])+)\?=$/
-  , ew_supportedEncoding = ['utf-8', 'utf8', 'ucs2', 'ucs-2', 'hex', 'ascii',
-      'binary', 'base64'];
+var iconv = require('iconv')
+  , ew_re_all = /=\?[\w-]+\?[QB]\?(?:.|[\r\n])+?\?=/g
+  , window_1252 = [
+    '€', '',  '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '',  'Ž', '',
+    '',  '‘',  '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '', 'ž', 'Ÿ'
+  ];
 
 
 /*
@@ -13,42 +16,45 @@ var ew_re = /^=\?([\w-]+)\?([QB])\?((?:.|[\r\n])+)\?=$/
   untouched. Else, the encoded text is returned decoded in a standard utf8
   string.
 
-  Important note: node does not support other charsets than utf8.
-
   More informations:
     * https://secure.wikimedia.org/wikipedia/en/wiki/MIME#Encoded-Word
     * http://tools.ietf.org/html/rfc2047
 */
 var ew_decode = exports.ew_decode = function (str) {
-  var match = str.match(ew_re);
-  if(!match) { return str; }
-  var encoding = match[1].toLowerCase()
-    , type = match[2]
-    , buffer;
+  return str.replace(ew_re_all, function (str) {
+    str = str.split('?');
+    var charset = str[1].toLowerCase()
+      , encoding = str[2]
+      , isutf8 = charset === 'utf-8' || charset ==='utf8'
+      , result;
 
-  str = match[3];
-  if(ew_supportedEncoding.indexOf(encoding) === -1) {
-    // Node supports only utf-8 encoding 
-    encoding = 'utf-8';
-  }
-  if(type === 'Q') {
-    // Quoted encoding
-    // Decode string to ascii
-    str = match[3]
-      .replace(/=\r\n/gm, '')
-      .replace(/_/g, ' ')
-      .replace(/=([0-9A-F]{2})/gim, function (sMatch, sHex) {
-        return String.fromCharCode(parseInt(sHex, 16));
-      });
-    // Encode it to UTF-8
-    buffer = new Buffer(str, 'ascii');
-  }
-  else {
-    // Base64 encoded
-    // Encode string to UTF-8
-    buffer = new Buffer(str, 'base64');
-  }
-  return buffer.toString(encoding);
+    str = str[3];
+    if(encoding === 'Q') {
+      // Quoted encoding
+      // Decode string to ascii
+      str = str
+        .replace(/=\r\n/gm, '')
+        .replace(/_/g, ' ')
+        .replace(/=([0-9A-F]{2})/gim, function (sMatch, sHex) {
+          sHex = parseInt(sHex, 16);
+          return String.fromCharCode(sHex) || window_1252[sHex - 128]; // Completing iso-8859 table with windows-1252
+        });
+      // Encode it to UTF-8
+      result =
+        isutf8 ? new Buffer(str, 'ascii') :
+        charset === 'windows-1252' ? str :
+          new iconv.Iconv(charset, 'windows-1252//TRANSLIT').convert(str);
+    }
+    else {
+      // Base64 encoded
+      // Encode string to UTF-8
+      result = new Buffer(str, 'base64');
+      if(!isutf8) {
+        result = new iconv.Iconv(charset, 'utf-8//TRANSLIT').convert(result);
+      }
+    }
+    return result.toString();
+  });
 }
 
 
@@ -61,8 +67,7 @@ var ew_decode = exports.ew_decode = function (str) {
   optionnal second parametter could be either Q (the default) or B to use a
   specific encoding.
 
-  Note: for now, charset will always be utf8 as node does not support other
-  charset.
+  Note: for now, charset will always be utf8.
 
   More informations:
     * https://secure.wikimedia.org/wikipedia/en/wiki/MIME#Encoded-Word
@@ -87,7 +92,7 @@ var ew_encode = exports.ew_encode = function (str, encoding) {
          code === 95 /*_*/ || code === 9 /* tab */ )
       {
         // Encode non-basic ASCII characters and some special ones
-        toAdd = '=' + code.toString(16).toUpperCase();
+        toAdd = (code < 16 ? '=0' : '=') + code.toString(16).toUpperCase();
       }
       else if(code === 32 /* space */) {
         // Replace spaces by underscore
