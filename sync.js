@@ -1,7 +1,8 @@
 var fs = require('fs')
   , Step = require('step')
   , mongo = require('mongoskin')
-  , ImapConnection = require('imap').ImapConnection;
+  , ImapConnection = require('imap').ImapConnection
+  , util = require('./util');
 
 function getCredentials (callback) {
   fs.readFile(process.env.HOME + '/.netrc', 'UTF8', function (e, data) {
@@ -43,12 +44,15 @@ function fetch (imap, uids, options, callback) {
 
 function storeMessages (db, mailbox, messages, callback) {
   log('Storing ' + messages.length + ' messages');
-  messages = messages.map(function(m) { return {
-    mailbox: dbId(db, mailbox),
-    id: m.id,
-    subject: m.headers.subject,
-    flags: m.flags
-  }; });
+  messages = messages.map(function(m) {
+    var subject = m.headers.subject && m.headers.subject[0];
+    return {
+      mailbox: dbId(db, mailbox),
+      id: m.id,
+      subject: subject && util.ew_decode(subject),
+      flags: m.flags
+    };
+  });
   db.collection('mails').insertAll(messages, callback);
 }
 
@@ -176,12 +180,16 @@ function sync (box_name) {
         log('Fetch mails to update');
         fetch(imap,
               '1:' + dbMailbox.uidnext,
-              { group: 0, request: { struct: false, headers: false } },
+              { group: 0, request: { struct: false, headers: false, date: false } },
               make(updateMessages, this, update)
              );
       }
       else {
-        update(); // nothing to update
+        var downloadAll = function (e, dbMailbox_) {
+          if (dbMailbox_) { dbMailbox = dbMailbox_[0]; }
+          update(e, '1:' + imapMailbox.uidnext);
+        };
+
         if(dbMailbox) {
           log('Remove all messages');
           db.collection('mails').remove(
@@ -192,28 +200,22 @@ function sync (box_name) {
           db.collection('mailboxes').updateById(
             dbMailbox._id,
             { $set: { validity: imapMailbox.validity } },
-            this.parallel()
+            downloadAll
           );
         }
         else {
           log('Create the mailbox');
-          dbMailbox = db.collection('mailboxes').insert(
+          db.collection('mailboxes').insert(
             {name: box_name, validity: imapMailbox.validity},
-            this.parallel()
+            downloadAll
           );
         }
-        log('Download all messages');
-        fetch(imap,
-              '1:' + imapMailbox.uidnext,
-              {},
-              make(storeMessages, this, this.parallel())
-             );
       }
     },
 
     function (e, toDownload) {
       if(e || !toDownload || !toDownload.length) { return this(e); }
-      log('Download missing emails (should not happen)');
+      log('Download missing emails');
       fetch(imap, toDownload, {}, make(storeMessages, this, this.parallel()));
     },
 
